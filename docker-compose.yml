@@ -1,0 +1,58 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: inventory-reservation-postgres
+    environment:
+      POSTGRES_DB: inventory
+      POSTGRES_USER: inventory
+      POSTGRES_PASSWORD: inventory
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inventory -d inventory"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      target: dev
+    container_name: inventory-reservation-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: inventory
+      DB_USER: inventory
+      DB_PASSWORD: inventory
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./backend:/workspace
+      - gradle-cache:/home/gradle/.gradle
+    command: gradle bootRun --no-daemon
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: inventory-reservation-frontend
+    depends_on:
+      - backend
+    environment:
+      VITE_API_BASE_URL: http://localhost:8080/api
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - frontend-node-modules:/app/node_modules
+    command: npm run dev -- --host 0.0.0.0
+
+volumes:
+  postgres-data:
+  gradle-cache:
+  frontend-node-modules:
