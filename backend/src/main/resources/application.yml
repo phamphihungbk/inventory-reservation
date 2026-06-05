@@ -16,8 +16,18 @@ spring:
           time_zone: UTC
   flyway:
     enabled: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
 server:
   port: 8080
 
 reservation:
   default-ttl-minutes: 15
+
+inventory:
+  grpc:
+    host: ${INVENTORY_GRPC_HOST:localhost}
+    port: ${INVENTORY_GRPC_PORT:9090}

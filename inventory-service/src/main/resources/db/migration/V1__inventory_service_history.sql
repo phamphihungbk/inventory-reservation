@@ -1,0 +1,2 @@
+-- Inventory service uses existing ticket_types table created by Ticket API migrations.
+-- Separate Flyway history table proves migration ownership without colliding with Ticket API history.

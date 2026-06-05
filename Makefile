@@ -1,6 +1,6 @@
 COMPOSE=docker compose
 
-.PHONY: up down logs backend frontend db migrate clean
+.PHONY: up down logs backend frontend inventory notifications db migrate clean
 
 up:
 	$(COMPOSE) up --build
@@ -16,6 +16,12 @@ backend:
 
 frontend:
 	$(COMPOSE) up --build frontend
+
+inventory:
+	$(COMPOSE) up --build inventory-service
+
+notifications:
+	$(COMPOSE) up --build notification-service mailhog kafka
 
 db:
 	$(COMPOSE) up -d postgres

@@ -7,7 +7,7 @@ import java.time.Instant
 
 data class CreateReservationRequest(
     @field:NotNull
-    val productId: Long,
+    val ticketTypeId: Long,
 
     @field:Min(1)
     val quantity: Int,
@@ -15,7 +15,10 @@ data class CreateReservationRequest(
 
 data class ReservationResponse(
     val id: Long,
-    val productId: Long,
+    val ticketTypeId: Long,
+    val ticketTypeName: String,
+    val eventId: Long,
+    val eventName: String,
     val quantity: Int,
     val status: ReservationStatus,
     val expiresAt: Instant,

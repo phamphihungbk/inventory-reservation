@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: inventory-service
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:inventory}
+    username: ${DB_USER:inventory}
+    password: ${DB_PASSWORD:inventory}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+    table: inventory_service_schema_history
+    baseline-on-migrate: true
+server:
+  port: 8081
+
+grpc:
+  server:
+    port: ${GRPC_PORT:9090}

@@ -2,6 +2,6 @@ package com.example.inventory.entity
 
 enum class ReservationStatus {
     ACTIVE,
-    CANCELED,
+    CANCELLED,
     EXPIRED
 }

@@ -1,30 +1,50 @@
 import { createRouter, createWebHistory } from 'vue-router';
 
-import CreateProductPage from '@/pages/CreateProductPage.vue';
-import ProductsPage from '@/pages/ProductsPage.vue';
-import ReservationsPage from '@/pages/ReservationsPage.vue';
+import CheckoutPage from '@/pages/CheckoutPage.vue';
+import EventDetailPage from '@/pages/EventDetailPage.vue';
+import HomePage from '@/pages/HomePage.vue';
+import NotificationDebugPage from '@/pages/NotificationDebugPage.vue';
+import OrderSuccessPage from '@/pages/OrderSuccessPage.vue';
+import ReservationPage from '@/pages/ReservationPage.vue';
+import SearchPage from '@/pages/SearchPage.vue';
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     {
       path: '/',
-      redirect: '/products',
+      name: 'home',
+      component: HomePage,
     },
     {
-      path: '/products',
-      name: 'products',
-      component: ProductsPage,
+      path: '/search',
+      name: 'search',
+      component: SearchPage,
     },
     {
-      path: '/products/new',
-      name: 'create-product',
-      component: CreateProductPage,
+      path: '/events/:id',
+      name: 'event-detail',
+      component: EventDetailPage,
     },
     {
-      path: '/reservations',
-      name: 'reservations',
-      component: ReservationsPage,
+      path: '/reservations/:id',
+      name: 'reservation',
+      component: ReservationPage,
+    },
+    {
+      path: '/checkout/:reservationId',
+      name: 'checkout',
+      component: CheckoutPage,
+    },
+    {
+      path: '/orders/:id',
+      name: 'order-success',
+      component: OrderSuccessPage,
+    },
+    {
+      path: '/admin/notifications',
+      name: 'notification-debug',
+      component: NotificationDebugPage,
     },
   ],
 });

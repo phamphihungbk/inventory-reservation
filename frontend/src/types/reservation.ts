@@ -1,8 +1,11 @@
-export type ReservationStatus = 'ACTIVE' | 'CANCELED' | 'EXPIRED';
+export type ReservationStatus = 'ACTIVE' | 'CANCELLED' | 'EXPIRED';
 
 export interface Reservation {
   id: number;
-  productId: number;
+  ticketTypeId: number;
+  ticketTypeName: string;
+  eventId: number;
+  eventName: string;
   quantity: number;
   status: ReservationStatus;
   expiresAt: string;
@@ -10,6 +13,6 @@ export interface Reservation {
 }
 
 export interface CreateReservationPayload {
-  productId: number;
+  ticketTypeId: number;
   quantity: number;
 }

@@ -12,11 +12,21 @@ import org.springframework.http.converter.HttpMessageNotReadableException
 
 @RestControllerAdvice
 class GlobalExceptionHandler {
-    @ExceptionHandler(ProductNotFoundException::class, ReservationNotFoundException::class)
+    @ExceptionHandler(
+        EventNotFoundException::class,
+        TicketTypeNotFoundException::class,
+        ReservationNotFoundException::class,
+        PaymentNotFoundException::class,
+        OrderNotFoundException::class,
+    )
     fun handleNotFound(ex: RuntimeException): ResponseEntity<ApiError> =
         error(HttpStatus.NOT_FOUND, ex.message ?: "Resource not found")
 
-    @ExceptionHandler(InsufficientStockException::class, OptimisticLockingFailureException::class)
+    @ExceptionHandler(
+        InsufficientStockException::class,
+        OptimisticLockingFailureException::class,
+        DuplicatePaymentException::class,
+    )
     fun handleConflict(ex: RuntimeException): ResponseEntity<ApiError> =
         error(HttpStatus.CONFLICT, ex.message ?: "Conflict")
 
@@ -33,7 +43,11 @@ class GlobalExceptionHandler {
         return error(HttpStatus.BAD_REQUEST, message)
     }
 
-    @ExceptionHandler(ConstraintViolationException::class, IllegalStateException::class)
+    @ExceptionHandler(
+        ConstraintViolationException::class,
+        IllegalStateException::class,
+        ReservationExpiredException::class,
+    )
     fun handleBadRequest(ex: RuntimeException): ResponseEntity<ApiError> =
         error(HttpStatus.BAD_REQUEST, ex.message ?: "Bad request")
 

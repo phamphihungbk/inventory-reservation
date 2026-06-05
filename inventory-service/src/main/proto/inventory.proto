@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package inventory;
+
+option java_multiple_files = true;
+option java_package = "com.example.inventoryservice.grpc.generated";
+option java_outer_classname = "InventoryProto";
+
+service InventoryService {
+  rpc ReserveTickets(ReserveTicketsRequest) returns (ReserveTicketsResponse);
+  rpc ReleaseTickets(ReleaseTicketsRequest) returns (ReleaseTicketsResponse);
+  rpc GetAvailability(GetAvailabilityRequest) returns (GetAvailabilityResponse);
+}
+
+message ReserveTicketsRequest {
+  string ticketTypeId = 1;
+  int32 quantity = 2;
+}
+
+message ReserveTicketsResponse {
+  bool success = 1;
+  int32 remainingQuantity = 2;
+}
+
+message ReleaseTicketsRequest {
+  string ticketTypeId = 1;
+  int32 quantity = 2;
+}
+
+message ReleaseTicketsResponse {
+  bool success = 1;
+  int32 remainingQuantity = 2;
+}
+
+message GetAvailabilityRequest {
+  string ticketTypeId = 1;
+}
+
+message GetAvailabilityResponse {
+  int32 remainingQuantity = 1;
+}

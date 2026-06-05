@@ -38,7 +38,7 @@ export const useReservationStore = defineStore('reservationStore', {
       }
     },
 
-    async reserveProduct(payload: CreateReservationPayload) {
+    async reserveTickets(payload: CreateReservationPayload) {
       this.error = null;
 
       try {
@@ -56,10 +56,10 @@ export const useReservationStore = defineStore('reservationStore', {
       const previous = [...this.reservations];
 
       this.reservations = this.reservations.map((reservation) =>
-        reservation.id === id
+          reservation.id === id
           ? {
               ...reservation,
-              status: 'CANCELED',
+              status: 'CANCELLED',
             }
           : reservation,
       );

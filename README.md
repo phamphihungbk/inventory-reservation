@@ -1,217 +1,331 @@
-# Inventory Reservation
+# Ticketmaster MVP Reservation Platform
 
-Clean monorepo for a backend-focused inventory reservation. It contains one Kotlin Spring Boot API, one Vue 3 frontend, and one root Docker Compose file for local development.
+Portfolio-grade ticketing platform evolved from an Inventory Reservation System into a Ticketmaster-style MVP.
 
-## Backend Engineering Highlights
+Phase 2 adds gRPC, Kafka, and a Kafka-driven notification worker without replacing existing REST APIs or frontend flows.
 
-This project is designed to show practical backend engineering, not just CRUD.
+## Architecture
 
-- **Transactions**: reservation creation, cancellation, and expiration run inside service-layer `@Transactional` boundaries.
-- **Consistency**: stock changes and reservation state changes commit together, so inventory does not drift from reservation records.
-- **Concurrency awareness**: concurrent reservation requests are handled through JPA version checks instead of unsafe read-modify-write assumptions.
-- **Inventory logic**: creating a reservation reduces stock; canceling or expiring an active reservation restores stock.
-- **Optimistic locking**: `Product` uses `@Version`, so stale concurrent updates fail with `409 Conflict` instead of overselling.
-- **Scheduling**: expired active reservations are processed by a scheduled Spring job that releases stock automatically.
-
-Core flow:
-
-```text
-Create reservation
--> load product in transaction
--> validate available stock
--> decrement stock
--> create ACTIVE reservation with expiration time
--> commit product + reservation together
+```mermaid
+flowchart LR
+    UI["Vue Frontend"] -->|REST + SSE| API["Ticket API<br/>Spring Boot"]
+    API -->|events/search/reservations/payments/orders| DB[(PostgreSQL)]
+    API -->|gRPC Reserve/Release/GetAvailability| INV["Inventory Service<br/>Spring Boot gRPC"]
+    INV -->|TicketType inventory + @Version| DB
+    API -->|Kafka domain events| K[(Kafka)]
+    K --> NOTIF["Notification Service<br/>Kafka Consumer"]
+    NOTIF -->|SMTP| MH["MailHog"]
+    NOTIF -->|processed_events + sent_notifications| DB
 ```
 
-Concurrent safety example:
+## Services
+
+| Service | Responsibility | Port |
+| --- | --- | --- |
+| frontend | Vue UI, EventSource SSE listener, notification debug page | `5173` |
+| backend / Ticket API | REST API, search, reservations, payments, orders, SSE, Kafka producers, gRPC client | `8080` |
+| inventory-service | Ticket inventory source of truth, optimistic locking, gRPC server | `9090` |
+| notification-service | Kafka consumers, idempotency, email sending, retries, DLT | none |
+| postgres | Shared data store | `5432` |
+| kafka | Domain event broker | internal `9092`, host `9094` |
+| zookeeper | Kafka coordination | `2181` |
+| mailhog | Local email capture | SMTP `1025`, UI `8025` |
+
+## Domain
 
 ```text
-Request A reads product stock=10 version=0
-Request B reads product stock=10 version=0
+Event
+└── TicketType
+    └── remainingQuantity + @Version
 
-A reserves 8 -> writes stock=2 version=1 -> success
-B reserves 8 -> tries stale version=0 write -> optimistic lock failure -> 409 Conflict
+Reservation -> TicketType
+Payment -> Reservation
+Order -> Reservation
 ```
 
-## Monorepo Structure
+`TicketType.remainingQuantity` is now owned by `inventory-service`.
+
+## gRPC Contract
+
+Proto file:
+
+- `backend/src/main/proto/inventory.proto`
+- `inventory-service/src/main/proto/inventory.proto`
+
+Service:
+
+```protobuf
+service InventoryService {
+  rpc ReserveTickets(ReserveTicketsRequest) returns (ReserveTicketsResponse);
+  rpc ReleaseTickets(ReleaseTicketsRequest) returns (ReleaseTicketsResponse);
+  rpc GetAvailability(GetAvailabilityRequest) returns (GetAvailabilityResponse);
+}
+```
+
+## gRPC Reservation Flow
+
+```mermaid
+sequenceDiagram
+    participant UI as Vue Frontend
+    participant API as Ticket API
+    participant INV as Inventory Service
+    participant DB as PostgreSQL
+    participant K as Kafka
+
+    UI->>API: POST /api/reservations
+    API->>INV: ReserveTickets(ticketTypeId, quantity)
+    INV->>DB: decrement ticket_types.remaining_quantity
+    DB-->>INV: optimistic lock commit
+    INV-->>API: remainingQuantity
+    API->>DB: create ACTIVE reservation
+    API->>K: reservation.created.v1
+    API-->>UI: ReservationResponse
+    API-->>UI: SSE inventory-updated
+```
+
+## gRPC Expiration Flow
+
+```mermaid
+sequenceDiagram
+    participant API as Ticket API Scheduler
+    participant INV as Inventory Service
+    participant DB as PostgreSQL
+    participant K as Kafka
+
+    API->>DB: find expired ACTIVE reservations
+    API->>INV: ReleaseTickets(ticketTypeId, quantity)
+    INV->>DB: restore remaining_quantity
+    INV-->>API: remainingQuantity
+    API->>DB: mark reservation EXPIRED
+    API->>K: reservation.expired.v1
+    API-->>API: broadcast SSE inventory-updated
+```
+
+## Kafka Topics
+
+| Topic | Producer | Consumer | Purpose |
+| --- | --- | --- | --- |
+| `reservation.created` | Ticket API | Notification Service | Reservation email |
+| `reservation.expired` | Ticket API | Notification Service | Expiration email |
+| `reservation.cancelled` | Ticket API | future consumers | Cancellation event |
+| `payment.succeeded` | Ticket API | future consumers | Payment audit/event demo |
+| `payment.failed` | Ticket API | Notification Service | Failed payment email |
+| `ticket.purchased` | Ticket API | Notification Service | Purchase confirmation email |
+| `inventory.changed` | Ticket API | future consumers | Inventory event stream |
+
+Dead-letter topics use `<topic>.DLT`.
+
+## Event Contract
+
+Events are immutable JSON payloads:
+
+```json
+{
+  "eventId": "uuid",
+  "eventType": "reservation.created.v1",
+  "occurredAt": "2026-01-01T12:00:00Z",
+  "reservationId": "36",
+  "ticketTypeId": "4",
+  "quantity": 1
+}
+```
+
+## Kafka Event Flow
+
+```mermaid
+flowchart LR
+    API["Ticket API"] -->|"reservation.created.v1"| RC["reservation.created"]
+    API -->|"reservation.expired.v1"| RE["reservation.expired"]
+    API -->|"payment.failed.v1"| PF["payment.failed"]
+    API -->|"ticket.purchased.v1"| TP["ticket.purchased"]
+    RC --> N["Notification Service"]
+    RE --> N
+    PF --> N
+    TP --> N
+    N -->|"SMTP"| M["MailHog"]
+    N -->|"idempotency + debug rows"| DB[(PostgreSQL)]
+```
+
+## Email Flow
+
+```mermaid
+sequenceDiagram
+    participant API as Ticket API
+    participant K as Kafka
+    participant N as Notification Service
+    participant DB as PostgreSQL
+    participant M as MailHog
+
+    API->>K: ticket.purchased.v1
+    K->>N: consume event
+    N->>DB: check processed_events
+    N->>M: send email
+    N->>DB: insert processed_events + sent_notifications
+```
+
+## Notification Reliability
+
+- Consumer group: `notification-service`
+- Retry: `DefaultErrorHandler` with fixed backoff, 3 retries
+- Dead letter: failed records go to `<topic>.DLT`
+- Idempotency: `processed_events(event_id)` prevents duplicate email sends
+- Debug rows: `sent_notifications` powers `/admin/notifications`
+
+## Optimistic Locking
+
+`TicketType` keeps JPA `@Version` in `inventory-service`.
+
+Scenario:
 
 ```text
-inventory-reservation-system/
-├── backend/
-│   ├── src/
-│   ├── build.gradle.kts
-│   ├── settings.gradle.kts
-│   ├── Dockerfile
-│   └── .env.example
-├── frontend/
-│   ├── src/
-│   ├── package.json
-│   ├── vite.config.ts
-│   ├── Dockerfile
-│   └── .env.example
-├── docker-compose.yml
-├── Makefile
-├── README.md
-└── .gitignore
+remainingQuantity = 10, version = 0
+User A reserves 8
+User B reserves 8
+
+A commits -> remainingQuantity = 2, version = 1
+B commits stale version -> optimistic lock conflict
+Ticket API returns 409 Conflict
 ```
 
-## Applications
+No pessimistic lock. No `SELECT FOR UPDATE`. Deliberate choice: fast normal path, explicit conflict under concurrent writes.
 
-Backend:
+## PostgreSQL Search
 
-- Kotlin
-- Spring Boot 3
-- PostgreSQL
-- Flyway
-- Gradle Kotlin DSL
-- Runs on `http://localhost:8080`
+Event search stays in Ticket API:
 
-Frontend:
+```text
+GET /api/events/search?q=&page=&size=
+```
 
-- Vue 3
-- TypeScript
-- Vite
-- Pinia
-- TailwindCSS
-- Runs on `http://localhost:5173`
+Uses PostgreSQL only:
 
-PostgreSQL:
+- `pg_trgm`
+- `to_tsvector`
+- `plainto_tsquery`
+- `ts_rank`
+- `similarity`
+- pagination
 
-- Runs on `localhost:5432`
-- Database: `inventory`
-- User: `inventory`
-- Password: `inventory`
+No Elasticsearch, Redis, or external search engine.
+
+## SSE Realtime Inventory
+
+SSE stays in Ticket API:
+
+```text
+GET /api/tickets/{ticketTypeId}/watch
+```
+
+When inventory changes through gRPC, Ticket API emits:
+
+```text
+event: inventory-updated
+data: { "ticketTypeId": 4, "remainingQuantity": 9999 }
+```
+
+Notification Service does not own SSE.
 
 ## Local Development
 
-Copy env examples when running outside Docker:
-
-```bash
-cp backend/.env.example backend/.env
-cp frontend/.env.example frontend/.env
-```
-
-Start everything with Docker:
+Start full platform:
 
 ```bash
 make up
 ```
 
-Open:
-
-- Frontend: `http://localhost:5173`
-- Backend API: `http://localhost:8080/api/products`
-
-Stop services:
+Stop:
 
 ```bash
 make down
 ```
 
-## Makefile Usage
+Logs:
 
 ```bash
-make up        # Build and start frontend, backend, postgres
-make down      # Stop containers
-make logs      # Follow all logs
-make backend   # Start backend and postgres
-make frontend  # Start frontend, backend, postgres dependency chain
-make db        # Start postgres only
-make migrate   # Run Spring Boot once in non-web mode so Flyway migrations apply
-make clean     # Stop containers and remove volumes
+make logs
 ```
 
-All targets use `docker compose`.
+Useful targets:
 
-## Docker Compose
-
-Root `docker-compose.yml` defines:
-
-- `postgres`: PostgreSQL database with persistent named volume
-- `backend`: Spring Boot dev container with mounted `./backend`
-- `frontend`: Vite dev container with mounted `./frontend`
-
-Service order:
-
-```text
-frontend -> backend -> postgres
+```bash
+make backend
+make frontend
+make inventory
+make notifications
+make db
+make clean
 ```
 
-Hot reload:
+Open:
 
-- Backend source is mounted into `/workspace`
-- Frontend source is mounted into `/app`
-- Gradle and npm dependencies use Docker named volumes
+- Frontend: `http://localhost:5173`
+- Backend API: `http://localhost:8080/api/events`
+- Notification debug page: `http://localhost:5173/admin/notifications`
+- MailHog: `http://localhost:8025`
 
-## API Integration
+## API
 
-Frontend uses:
+Existing REST API preserved:
 
-```text
-VITE_API_BASE_URL=http://localhost:8080/api
-```
-
-Backend uses:
-
-```text
-DB_HOST=postgres
-DB_PORT=5432
-DB_NAME=inventory
-DB_USER=inventory
-DB_PASSWORD=inventory
-```
-
-Main endpoints:
-
-- `GET /api/products`
-- `GET /api/products/{id}`
-- `POST /api/products`
+- `GET /api/events`
+- `GET /api/events/{id}`
+- `GET /api/events/search?q=`
+- `POST /api/events`
 - `GET /api/reservations`
 - `POST /api/reservations`
 - `DELETE /api/reservations/{id}`
+- `POST /api/payments`
+- `GET /api/orders/{id}`
+- `GET /api/tickets/{id}/watch`
+- `GET /api/admin/notifications`
 
-## Run Without Docker
+## Payment Simulator
 
-Backend:
+| Card | Result |
+| --- | --- |
+| `4242424242424242` | `SUCCEEDED` |
+| `4000000000000002` | `FAILED` |
 
-```bash
-cd backend
-gradle bootRun
-```
+Gateway simulates 1-3 seconds latency.
 
-Frontend:
+## Failure Scenarios
 
-```bash
-cd frontend
-npm install
-npm run dev
-```
+Inventory service down:
 
-## Troubleshooting
+- Reservation creation fails because gRPC call cannot reserve stock.
+- Existing event/search pages still load from Ticket API/PostgreSQL.
 
-Port already in use:
+Concurrent reservation conflict:
 
-```bash
-lsof -i :8080
-lsof -i :5173
-```
+- Inventory service optimistic lock fails.
+- Ticket API maps conflict to `409 Conflict`.
 
-Database connection fails:
+Kafka down:
 
-- Run `make db`
-- Check `docker compose logs postgres`
-- Verify backend env vars match `docker-compose.yml`
+- Core reservation/payment DB work can complete; event send can fail asynchronously in current v2 demo.
+- Future production path: transactional outbox in Ticket API.
 
-Frontend cannot reach API:
+Notification email failure:
 
-- Confirm backend is running at `http://localhost:8080`
-- Confirm `frontend/.env` has `VITE_API_BASE_URL=http://localhost:8080/api`
-- Restart Vite after changing env values
+- Kafka consumer retries 3 times.
+- After retry exhaustion, event goes to `<topic>.DLT`.
 
-Stale containers or volumes:
+Duplicate event delivery:
 
-```bash
-make clean
-make up
-```
+- Notification service checks `processed_events`.
+- Already processed event is ignored.
+
+## Interview Story
+
+This project shows:
+
+- REST for frontend API
+- gRPC for synchronous internal inventory operations
+- Kafka for async side effects
+- Optimistic locking for oversell prevention
+- PostgreSQL full text search
+- SSE for realtime inventory updates
+- MailHog for local email demo
+- Consumer retry, DLT, and idempotency
+
+Architecture stays understandable: only inventory ownership and notification side effects were split out. Search, reservations, payments, orders, and SSE remain in Ticket API.

@@ -21,8 +21,8 @@ class Reservation(
     val id: Long? = null,
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "product_id", nullable = false)
-    val product: Product,
+    @JoinColumn(name = "ticket_type_id", nullable = false)
+    val ticketType: TicketType,
 
     @Column(nullable = false)
     val quantity: Int,

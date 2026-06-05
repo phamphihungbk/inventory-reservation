@@ -5,12 +5,15 @@ import com.example.inventory.dto.CreateReservationRequest
 import com.example.inventory.dto.ReservationResponse
 import com.example.inventory.entity.Reservation
 import com.example.inventory.entity.ReservationStatus
-import com.example.inventory.exception.InsufficientStockException
-import com.example.inventory.exception.ProductNotFoundException
 import com.example.inventory.exception.ReservationNotFoundException
+import com.example.inventory.exception.TicketTypeNotFoundException
+import com.example.inventory.grpc.InventoryGrpcClient
+import com.example.inventory.kafka.KafkaTopics
+import com.example.inventory.kafka.TicketEvent
+import com.example.inventory.kafka.TicketEventPublisher
 import com.example.inventory.mapper.toResponse
-import com.example.inventory.repository.ProductRepository
 import com.example.inventory.repository.ReservationRepository
+import com.example.inventory.repository.TicketTypeRepository
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.Clock
@@ -19,9 +22,12 @@ import java.time.temporal.ChronoUnit
 
 @Service
 class ReservationService(
-    private val productRepository: ProductRepository,
+    private val ticketTypeRepository: TicketTypeRepository,
     private val reservationRepository: ReservationRepository,
     private val reservationProperties: ReservationProperties,
+    private val ticketInventorySseService: TicketInventorySseService,
+    private val inventoryGrpcClient: InventoryGrpcClient,
+    private val ticketEventPublisher: TicketEventPublisher,
     private val clock: Clock,
 ) {
     @Transactional(readOnly = true)
@@ -30,26 +36,32 @@ class ReservationService(
 
     @Transactional
     fun create(request: CreateReservationRequest): ReservationResponse {
-        val product = productRepository.findById(request.productId)
-            .orElseThrow { ProductNotFoundException(request.productId) }
+        val ticketType = ticketTypeRepository.findById(request.ticketTypeId)
+            .orElseThrow { TicketTypeNotFoundException(request.ticketTypeId) }
 
-        if (product.stock < request.quantity) {
-            throw InsufficientStockException(
-                productId = request.productId,
-                requested = request.quantity,
-                available = product.stock,
-            )
-        }
+        val inventory = inventoryGrpcClient.reserveTickets(request.ticketTypeId, request.quantity)
 
-        product.stock -= request.quantity
-
-        val reservation = Reservation(
-            product = product,
-            quantity = request.quantity,
-            expiresAt = Instant.now(clock).plus(reservationProperties.defaultTtlMinutes, ChronoUnit.MINUTES),
+        val reservation = reservationRepository.save(
+            Reservation(
+                ticketType = ticketType,
+                quantity = request.quantity,
+                expiresAt = Instant.now(clock).plus(reservationProperties.defaultTtlMinutes, ChronoUnit.MINUTES),
+            ),
         )
 
-        return reservationRepository.save(reservation).toResponse()
+        ticketInventorySseService.broadcastInventory(request.ticketTypeId, inventory.remainingQuantity)
+        publishInventoryChanged(request.ticketTypeId, request.quantity)
+        ticketEventPublisher.publish(
+            KafkaTopics.RESERVATION_CREATED,
+            TicketEvent(
+                eventType = "reservation.created.v1",
+                reservationId = requireNotNull(reservation.id).toString(),
+                ticketTypeId = request.ticketTypeId.toString(),
+                quantity = request.quantity,
+            ),
+        )
+
+        return reservation.toResponse()
     }
 
     @Transactional
@@ -61,8 +73,20 @@ class ReservationService(
             return reservation.toResponse()
         }
 
-        reservation.product.stock += reservation.quantity
-        reservation.status = ReservationStatus.CANCELED
+        val ticketTypeId = requireNotNull(reservation.ticketType.id)
+        val inventory = inventoryGrpcClient.releaseTickets(ticketTypeId, reservation.quantity)
+        reservation.status = ReservationStatus.CANCELLED
+        ticketInventorySseService.broadcastInventory(ticketTypeId, inventory.remainingQuantity)
+        publishInventoryChanged(ticketTypeId, reservation.quantity)
+        ticketEventPublisher.publish(
+            KafkaTopics.RESERVATION_CANCELLED,
+            TicketEvent(
+                eventType = "reservation.cancelled.v1",
+                reservationId = requireNotNull(reservation.id).toString(),
+                ticketTypeId = ticketTypeId.toString(),
+                quantity = reservation.quantity,
+            ),
+        )
 
         return reservation.toResponse()
     }
@@ -75,10 +99,33 @@ class ReservationService(
         )
 
         expiredReservations.forEach { reservation ->
-            reservation.product.stock += reservation.quantity
+            val ticketTypeId = requireNotNull(reservation.ticketType.id)
+            val inventory = inventoryGrpcClient.releaseTickets(ticketTypeId, reservation.quantity)
             reservation.status = ReservationStatus.EXPIRED
+            ticketInventorySseService.broadcastInventory(ticketTypeId, inventory.remainingQuantity)
+            publishInventoryChanged(ticketTypeId, reservation.quantity)
+            ticketEventPublisher.publish(
+                KafkaTopics.RESERVATION_EXPIRED,
+                TicketEvent(
+                    eventType = "reservation.expired.v1",
+                    reservationId = requireNotNull(reservation.id).toString(),
+                    ticketTypeId = ticketTypeId.toString(),
+                    quantity = reservation.quantity,
+                ),
+            )
         }
 
         return expiredReservations.size
+    }
+
+    private fun publishInventoryChanged(ticketTypeId: Long, quantity: Int) {
+        ticketEventPublisher.publish(
+            KafkaTopics.INVENTORY_CHANGED,
+            TicketEvent(
+                eventType = "inventory.changed.v1",
+                ticketTypeId = ticketTypeId.toString(),
+                quantity = quantity,
+            ),
+        )
     }
 }
