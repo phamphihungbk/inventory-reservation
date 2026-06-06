@@ -1,0 +1,5 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="TicketFlow mark">
+  <rect width="64" height="64" rx="18" fill="#4F46E5"/>
+  <path d="M16 22C16 18.6863 18.6863 16 22 16H46C49.3137 16 52 18.6863 52 22V27C48.6863 27 46 29.6863 46 33C46 36.3137 48.6863 39 52 39V44C52 47.3137 49.3137 50 46 50H22C18.6863 50 16 47.3137 16 44V39C19.3137 39 22 36.3137 22 33C22 29.6863 19.3137 27 16 27V22Z" fill="white"/>
+  <path d="M33 20V47" stroke="#4F46E5" stroke-width="4" stroke-linecap="round" stroke-dasharray="4 7"/>
+</svg>

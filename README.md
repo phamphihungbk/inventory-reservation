@@ -1,8 +1,6 @@
-# Ticketmaster MVP Reservation Platform
+# TicketFlow
 
-Portfolio-grade ticketing platform evolved from an Inventory Reservation System into a Ticketmaster-style MVP.
-
-Phase 2 adds gRPC, Kafka, and a Kafka-driven notification worker without replacing existing REST APIs or frontend flows.
+A Ticketmaster-inspired reservation platform demonstrating event search, ticket inventory management, payment processing, gRPC-based inventory services, and Kafka-driven notifications.
 
 ## Architecture
 
