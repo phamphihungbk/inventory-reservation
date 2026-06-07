@@ -10,12 +10,14 @@ import com.example.inventory.exception.TicketTypeNotFoundException
 import com.example.inventory.grpc.InventoryGrpcClient
 import com.example.inventory.kafka.KafkaTopics
 import com.example.inventory.kafka.TicketEvent
-import com.example.inventory.kafka.TicketEventPublisher
 import com.example.inventory.mapper.toResponse
+import com.example.inventory.outbox.OutboxEventService
 import com.example.inventory.repository.ReservationRepository
 import com.example.inventory.repository.TicketTypeRepository
+import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionTemplate
 import java.time.Clock
 import java.time.Instant
 import java.time.temporal.ChronoUnit
@@ -27,9 +29,12 @@ class ReservationService(
     private val reservationProperties: ReservationProperties,
     private val ticketInventorySseService: TicketInventorySseService,
     private val inventoryGrpcClient: InventoryGrpcClient,
-    private val ticketEventPublisher: TicketEventPublisher,
+    private val outboxEventService: OutboxEventService,
+    private val transactionTemplate: TransactionTemplate,
     private val clock: Clock,
 ) {
+    private val log = LoggerFactory.getLogger(javaClass)
+
     @Transactional(readOnly = true)
     fun getAll(): List<ReservationResponse> =
         reservationRepository.findAll().map { it.toResponse() }
@@ -51,7 +56,7 @@ class ReservationService(
 
         ticketInventorySseService.broadcastInventory(request.ticketTypeId, inventory.remainingQuantity)
         publishInventoryChanged(request.ticketTypeId, request.quantity)
-        ticketEventPublisher.publish(
+        outboxEventService.enqueue(
             KafkaTopics.RESERVATION_CREATED,
             TicketEvent(
                 eventType = "reservation.created.v1",
@@ -78,7 +83,7 @@ class ReservationService(
         reservation.status = ReservationStatus.CANCELLED
         ticketInventorySseService.broadcastInventory(ticketTypeId, inventory.remainingQuantity)
         publishInventoryChanged(ticketTypeId, reservation.quantity)
-        ticketEventPublisher.publish(
+        outboxEventService.enqueue(
             KafkaTopics.RESERVATION_CANCELLED,
             TicketEvent(
                 eventType = "reservation.cancelled.v1",
@@ -91,35 +96,55 @@ class ReservationService(
         return reservation.toResponse()
     }
 
-    @Transactional
     fun expireActiveReservations(): Int {
         val expiredReservations = reservationRepository.findByStatusAndExpiresAtBefore(
             status = ReservationStatus.ACTIVE,
             expiresAt = Instant.now(clock),
         )
 
+        var expiredCount = 0
         expiredReservations.forEach { reservation ->
-            val ticketTypeId = requireNotNull(reservation.ticketType.id)
-            val inventory = inventoryGrpcClient.releaseTickets(ticketTypeId, reservation.quantity)
-            reservation.status = ReservationStatus.EXPIRED
-            ticketInventorySseService.broadcastInventory(ticketTypeId, inventory.remainingQuantity)
-            publishInventoryChanged(ticketTypeId, reservation.quantity)
-            ticketEventPublisher.publish(
-                KafkaTopics.RESERVATION_EXPIRED,
-                TicketEvent(
-                    eventType = "reservation.expired.v1",
-                    reservationId = requireNotNull(reservation.id).toString(),
-                    ticketTypeId = ticketTypeId.toString(),
-                    quantity = reservation.quantity,
-                ),
-            )
+            val reservationId = requireNotNull(reservation.id)
+            var ticketTypeId: Long? = null
+            try {
+                transactionTemplate.execute<Unit> {
+                    val activeReservation = reservationRepository.findById(reservationId)
+                        .orElseThrow { ReservationNotFoundException(reservationId) }
+                    if (activeReservation.status != ReservationStatus.ACTIVE) {
+                        return@execute
+                    }
+
+                    ticketTypeId = requireNotNull(activeReservation.ticketType.id)
+                    val inventory = inventoryGrpcClient.releaseTickets(ticketTypeId!!, activeReservation.quantity)
+                    activeReservation.status = ReservationStatus.EXPIRED
+                    ticketInventorySseService.broadcastInventory(ticketTypeId!!, inventory.remainingQuantity)
+                    publishInventoryChanged(ticketTypeId!!, activeReservation.quantity)
+                    outboxEventService.enqueue(
+                        KafkaTopics.RESERVATION_EXPIRED,
+                        TicketEvent(
+                            eventType = "reservation.expired.v1",
+                            reservationId = reservationId.toString(),
+                            ticketTypeId = ticketTypeId.toString(),
+                            quantity = activeReservation.quantity,
+                        ),
+                    )
+                    expiredCount += 1
+                }
+            } catch (ex: RuntimeException) {
+                log.warn(
+                    "Failed to expire reservation {} ticket type {}",
+                    reservationId,
+                    ticketTypeId ?: "unknown",
+                    ex,
+                )
+            }
         }
 
-        return expiredReservations.size
+        return expiredCount
     }
 
     private fun publishInventoryChanged(ticketTypeId: Long, quantity: Int) {
-        ticketEventPublisher.publish(
+        outboxEventService.enqueue(
             KafkaTopics.INVENTORY_CHANGED,
             TicketEvent(
                 eventType = "inventory.changed.v1",

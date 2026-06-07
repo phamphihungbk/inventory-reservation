@@ -28,7 +28,7 @@ class Payment(
     @Column(nullable = false)
     val provider: String,
     @Column(name = "provider_reference", nullable = false)
-    val providerReference: String,
+    var providerReference: String,
     @Column(name = "created_at", nullable = false, updatable = false)
     val createdAt: Instant = Instant.now(),
 )

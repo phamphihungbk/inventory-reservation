@@ -1,6 +1,7 @@
 package com.example.inventory.service
 
 import com.example.inventory.entity.TicketType
+import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Service
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter
 import java.io.IOException
@@ -12,12 +13,12 @@ class TicketInventorySseService {
     private val subscribers = ConcurrentHashMap<Long, CopyOnWriteArrayList<SseEmitter>>()
 
     fun watch(ticketTypeId: Long): SseEmitter {
-        val emitter = SseEmitter(0L)
+        val emitter = SseEmitter(EMITTER_TIMEOUT_MS)
         subscribers.computeIfAbsent(ticketTypeId) { CopyOnWriteArrayList() }.add(emitter)
         emitter.onCompletion { remove(ticketTypeId, emitter) }
         emitter.onTimeout { remove(ticketTypeId, emitter) }
         emitter.onError { remove(ticketTypeId, emitter) }
-        send(emitter, "connected", mapOf("ticketTypeId" to ticketTypeId))
+        send(ticketTypeId, emitter, "connected", mapOf("ticketTypeId" to ticketTypeId))
         return emitter
     }
 
@@ -32,22 +33,42 @@ class TicketInventorySseService {
             "remainingQuantity" to remainingQuantity,
             "version" to version,
         )
-        subscribers[ticketTypeId]?.forEach { send(it, "inventory-updated", payload) }
+        subscribers[ticketTypeId]?.forEach { send(ticketTypeId, it, "inventory-updated", payload) }
+    }
+
+    @Scheduled(fixedRateString = "\${sse.heartbeat-ms:25000}")
+    fun sendHeartbeat() {
+        subscribers.forEach { (ticketTypeId, emitters) ->
+            emitters.forEach {
+                send(ticketTypeId, it, "heartbeat", mapOf("ticketTypeId" to ticketTypeId))
+            }
+        }
     }
 
     private fun remove(ticketTypeId: Long, emitter: SseEmitter) {
-        subscribers[ticketTypeId]?.remove(emitter)
+        val emitters = subscribers[ticketTypeId] ?: return
+        emitters.remove(emitter)
+        if (emitters.isEmpty()) {
+            subscribers.remove(ticketTypeId, emitters)
+        }
     }
 
-    private fun send(emitter: SseEmitter, eventName: String, data: Any) {
+    private fun send(ticketTypeId: Long, emitter: SseEmitter, eventName: String, data: Any) {
         try {
             emitter.send(SseEmitter.event().name(eventName).data(data))
         } catch (_: IOException) {
+            remove(ticketTypeId, emitter)
             emitter.complete()
         } catch (_: IllegalStateException) {
+            remove(ticketTypeId, emitter)
             emitter.complete()
         } catch (_: RuntimeException) {
+            remove(ticketTypeId, emitter)
             emitter.complete()
         }
+    }
+
+    private companion object {
+        const val EMITTER_TIMEOUT_MS = 30L * 60L * 1000L
     }
 }

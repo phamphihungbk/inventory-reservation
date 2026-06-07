@@ -9,7 +9,8 @@ import com.example.inventory.entity.TicketType
 import com.example.inventory.exception.InsufficientStockException
 import com.example.inventory.grpc.InventoryChangeResult
 import com.example.inventory.grpc.InventoryGrpcClient
-import com.example.inventory.kafka.TicketEventPublisher
+import com.example.inventory.kafka.KafkaTopics
+import com.example.inventory.outbox.OutboxEventService
 import com.example.inventory.repository.ReservationRepository
 import com.example.inventory.repository.TicketTypeRepository
 import io.mockk.every
@@ -20,6 +21,7 @@ import io.mockk.verify
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
+import org.springframework.transaction.support.TransactionTemplate
 import java.math.BigDecimal
 import java.time.Clock
 import java.time.Instant
@@ -31,7 +33,8 @@ class ReservationServiceTest {
     private val reservationRepository = mockk<ReservationRepository>()
     private val sseService = mockk<TicketInventorySseService>()
     private val inventoryGrpcClient = mockk<InventoryGrpcClient>()
-    private val ticketEventPublisher = mockk<TicketEventPublisher>()
+    private val outboxEventService = mockk<OutboxEventService>()
+    private val transactionTemplate = mockk<TransactionTemplate>()
     private val properties = ReservationProperties().apply { defaultTtlMinutes = 15 }
     private val clock = Clock.fixed(Instant.parse("2026-05-08T10:00:00Z"), ZoneOffset.UTC)
     private val service = ReservationService(
@@ -40,7 +43,8 @@ class ReservationServiceTest {
         properties,
         sseService,
         inventoryGrpcClient,
-        ticketEventPublisher,
+        outboxEventService,
+        transactionTemplate,
         clock,
     )
 
@@ -61,7 +65,7 @@ class ReservationServiceTest {
             )
         }
         every { sseService.broadcastInventory(1, 3) } just runs
-        every { ticketEventPublisher.publish(any(), any()) } just runs
+        every { outboxEventService.enqueue(any(), any()) } just runs
 
         val response = service.create(CreateReservationRequest(ticketTypeId = 1, quantity = 2))
 
@@ -70,6 +74,8 @@ class ReservationServiceTest {
         assertEquals(ReservationStatus.ACTIVE, response.status)
         verify { inventoryGrpcClient.reserveTickets(1, 2) }
         verify { sseService.broadcastInventory(1, 3) }
+        verify { outboxEventService.enqueue(KafkaTopics.RESERVATION_CREATED, any()) }
+        verify { outboxEventService.enqueue(KafkaTopics.INVENTORY_CHANGED, any()) }
     }
 
     @Test
@@ -97,7 +103,7 @@ class ReservationServiceTest {
         every { reservationRepository.findById(10) } returns Optional.of(reservation)
         every { inventoryGrpcClient.releaseTickets(1, 2) } returns InventoryChangeResult(1, 5)
         every { sseService.broadcastInventory(1, 5) } just runs
-        every { ticketEventPublisher.publish(any(), any()) } just runs
+        every { outboxEventService.enqueue(any(), any()) } just runs
 
         val response = service.cancel(10)
 
@@ -105,6 +111,8 @@ class ReservationServiceTest {
         assertEquals(ReservationStatus.CANCELLED, response.status)
         verify { inventoryGrpcClient.releaseTickets(1, 2) }
         verify { sseService.broadcastInventory(1, 5) }
+        verify { outboxEventService.enqueue(KafkaTopics.RESERVATION_CANCELLED, any()) }
+        verify { outboxEventService.enqueue(KafkaTopics.INVENTORY_CHANGED, any()) }
     }
 
     private fun ticketType(remaining: Int): TicketType {
